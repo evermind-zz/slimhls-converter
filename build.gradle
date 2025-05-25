@@ -1,0 +1,13 @@
+plugins {
+    id 'com.android.library' version libs.versions.android.gradle.plugin apply false
+}
+
+allprojects {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+        maven { url "https://jitpack.io" }
+        // mavenLocal()
+    }
+}

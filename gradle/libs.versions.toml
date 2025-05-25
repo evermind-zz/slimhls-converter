@@ -1,0 +1,4 @@
+[versions]
+android-gradle-plugin = "8.1.1"
+
+[libraries]

@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+rootProject.name = 'slimhls-converter'
+include ':slimhls-converter'
+
+//dependencyResolutionManagement {
+//    repositories {
+//        google()
+//        mavenCentral()
+//        mavenLocal()
+//    }
+//}

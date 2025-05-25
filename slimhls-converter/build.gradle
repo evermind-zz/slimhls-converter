@@ -1,0 +1,281 @@
+plugins {
+    id 'com.android.library'
+    id 'maven-publish'
+}
+
+android {
+    namespace 'com.github.evermindzz.slimhls.converter'
+
+    compileSdk 31
+
+    defaultConfig {
+        minSdk 19
+        targetSdk 31
+        versionCode 1
+        versionName "1.0.0"
+
+        ndk {
+            abiFilters += ['armeabi-v7a' ] //, 'arm64-v8a', 'x86', 'x86_64']
+        }
+    }
+
+    //ndkVersion "25.2.9519653"
+    ndkVersion "27.2.12479018"
+
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    publishing {
+        singleVariant('release') {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
+
+    //packagingOptions {
+    //    jniLibs {
+    //        useLegacyPackaging true
+    //    }
+    //}
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+}
+
+dependencies {
+}
+
+// OS detection and paths
+def isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+def isMac = System.getProperty("os.name").toLowerCase().contains("mac")
+def shellCmd = isWindows ? ["cmd", "/c"] : ["sh", "-c"]
+def pathSeparator = isWindows ? "\\" : "/"
+def ndkPath = System.getenv("ANDROID_NDK_HOME") ?: android.ndkDirectory
+def upxPath = "${projectDir}${pathSeparator}tools${pathSeparator}upx${pathSeparator}" + (isWindows ? "upx-amd64-win.exe" : "upx-amd64-linux")
+// Architectures to build
+def architectures = [
+        [name: "x86_64", arch: "x86_64", crossPrefix: "x86_64-linux-android"],
+        [name: "arm64-v8a", arch: "arm64", crossPrefix: "aarch64-linux-android"],
+        [name: "x86", arch: "x86", crossPrefix: "i686-linux-android"],
+        [name: "armeabi-v7a", arch: "arm", crossPrefix: "armv7a-linux-androideabi"]
+]
+//]
+
+// FFmpeg tarball and extraction directory
+def ffmpegVersion = "7.1.1"
+def ffmpegTarball = file("${projectDir}${pathSeparator}tools${pathSeparator}ffmpeg-${ffmpegVersion}.tar.gz")
+def ffmpegExtractedDir = "${projectDir}${pathSeparator}ffmpeg-${ffmpegVersion}"
+
+// Task: Download FFmpeg tarball (only if missing)
+tasks.register("downloadFFmpeg") {
+    outputs.file(ffmpegTarball)
+    doLast {
+        if (!ffmpegTarball.exists()) {
+            println "Downloading FFmpeg ${ffmpegVersion}..."
+            new URL("https://ffmpeg.org/releases/ffmpeg-${ffmpegVersion}.tar.gz").withInputStream { i ->
+                ffmpegTarball.withOutputStream { it << i }
+            }
+            println "Download complete."
+        } else {
+            println "FFmpeg tarball already exists. Skipping download."
+        }
+    }
+}
+
+// Task: Extract FFmpeg tarball
+tasks.register("extractFFmpeg") {
+    dependsOn "downloadFFmpeg"
+    inputs.file(ffmpegTarball)
+    //outputs.dir(ffmpegExtractedDir)
+    doLast {
+        print(ffmpegExtractedDir)
+        if (!file(ffmpegExtractedDir).exists()) {
+            println "Extracting FFmpeg tarball..."
+            project.copy {
+                from tarTree(resources.gzip(ffmpegTarball))
+                into projectDir
+            }
+            println "Extraction complete."
+        } else {
+            println "FFmpeg source already extracted. Skipping extraction."
+        }
+    }
+}
+def apiLevel = 21
+// Register build tasks per architecture
+architectures.each { arch ->
+    def buildTaskName = "buildFFmpeg_${arch.name}"
+    tasks.register(buildTaskName) {
+        dependsOn "extractFFmpeg"
+        doLast {
+            def ffmpegDir = file(ffmpegExtractedDir)
+            def buildDir = "${projectDir}${pathSeparator}build${pathSeparator}${arch.name}"
+
+            def prebuiltDir = "${ndkPath}${pathSeparator}toolchains${pathSeparator}llvm${pathSeparator}prebuilt${pathSeparator}${isWindows ? 'windows-x86_64' : 'linux-x86_64'}"
+            def CC = "${prebuiltDir}${pathSeparator}bin${pathSeparator}${arch.crossPrefix}${apiLevel}-clang"
+            def CXX = "${prebuiltDir}${pathSeparator}bin${pathSeparator}${arch.crossPrefix}${apiLevel}-clang++"
+            def AR = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-ar"
+            def AS = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-as"
+            def NM = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-nm"
+            def STRIP = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-strip"
+            def RANLIB = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-ranlib"
+            def crossPrefix = "${prebuiltDir}${pathSeparator}bin${pathSeparator}${arch.crossPrefix}${isWindows ? 'clang' : ''}${apiLevel}-"
+
+            def configureCmd = [
+                    "./configure",
+                    "--prefix=${buildDir}",
+                    "--target-os=android",
+                    "--arch=${arch.arch}",
+                    "--disable-everything",
+                    "--disable-zlib",
+                    "--disable-doc",
+                    "--disable-avdevice",
+                    "--disable-swscale",
+                    "--disable-encoders",
+                    "--disable-filters",
+                    "--disable-indevs",
+                    "--disable-outdevs",
+                    "--disable-debug",
+                    "--disable-autodetect",
+                    "--disable-asm",
+                    "--enable-avformat",
+                    "--enable-avcodec",
+                    "--enable-avutil",
+                    "--enable-swresample",
+                    "--enable-decoder=h264",
+                    "--enable-decoder=aac",
+                    "--enable-demuxer=mpegts",
+                    "--enable-demuxer=concat",
+                    "--enable-muxer=mp4",
+                    "--enable-parser=h264",
+                    "--enable-parser=aac",
+                    "--enable-protocol=file",
+                    "--enable-protocol=concat",
+                    "--enable-bsf=aac_adtstoasc",
+                    "--enable-ffmpeg",
+                    "--enable-small",
+                    "--extra-cflags=\"-Os -fdata-sections -ffunction-sections -DANDROID\"",
+                    "--extra-ldflags=\"-Wl,--gc-sections -s\"",
+                    "--enable-cross-compile",
+                    "--cc=${CC}",
+                    "--cxx=${CXX}",
+                    "--ar=${AR}",
+                    "--as=${AS}",
+                    "--nm=${NM}",
+                    "--ld=${CC}", // always use CC and not the raw ld. It does not know sysroot and therefore fail
+                    "--strip=${STRIP}",
+                    "--ranlib=${RANLIB}",
+                    "--sysroot=${prebuiltDir}${pathSeparator}sysroot"
+            ]
+
+            //"--cpu=armv7-a",
+            // "--extra-cflags=\"-Os -fdata-sections -ffunction-sections -march=armv7-a -mfloat-abi=softfp -mfpu=vfpv3-d16\"",
+            // "--cross-prefix=${crossPrefix}",
+
+            // Run configure
+            project.exec {
+                commandLine shellCmd + [configureCmd.join(" ")]
+                workingDir ffmpegDir
+            }
+
+            // Run make
+            project.exec {
+                commandLine shellCmd + ["make -j${Runtime.runtime.availableProcessors()}"]
+                workingDir ffmpegDir
+            }
+
+            // Run make install
+            project.exec {
+                commandLine shellCmd + ["make install"]
+                workingDir ffmpegDir
+            }
+
+            // Create jniLibs dir
+            def jniLibsDir = file("${projectDir}${pathSeparator}src${pathSeparator}main${pathSeparator}jniLibs${pathSeparator}${arch.name}")
+            jniLibsDir.mkdirs()
+
+            // Copy ffmpeg binary to jniLibs
+            copy {
+                from file("${buildDir}${pathSeparator}bin${pathSeparator}ffmpeg")
+                into jniLibsDir
+                rename { "libffmpeg.so" }
+            }
+
+            // Strip binary
+            project.exec {
+                commandLine "${STRIP}", "${jniLibsDir}${pathSeparator}libffmpeg.so"
+            }
+
+            // UPX compress (skip on macOS)
+            if (!isMac) {
+                project.exec {
+                    commandLine shellCmd + ["${upxPath} --best ${jniLibsDir}${pathSeparator}libffmpeg.so"]
+                }
+            } else {
+                logger.warn("UPX is not available on macOS. Skipping compression for ${arch.name} ffmpeg binary.")
+            }
+
+            // Clean build artifacts
+            project.exec {
+                commandLine shellCmd + ["make distclean"]
+                workingDir ffmpegDir
+            }
+
+            // Delete build directory
+            delete buildDir
+        }
+    }
+}
+
+// Aggregate build task for all architectures
+tasks.register("buildFFmpeg") {
+    dependsOn architectures.collect { "buildFFmpeg_${it.name}" }
+}
+
+// Hook the buildFFmpeg into the preBuild lifecycle
+tasks.named("preBuild") {
+    dependsOn "buildFFmpeg"
+}
+
+// Clean up unnecessary files in jniLibs (keep only ffmpeg binaries)
+tasks.register("cleanJniLibs", Delete) {
+    delete fileTree("${projectDir}${pathSeparator}src${pathSeparator}main${pathSeparator}jniLibs") {
+        exclude "**/ffmpeg"
+    }
+}
+
+
+// Clean jniLibs after assembling release
+tasks.named("assemble") {
+    finalizedBy "cleanJniLibs"
+}
+
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+                groupId 'com.github.evermind-zz'
+                artifactId 'slimhls-converter'
+                version android.defaultConfig.versionName
+            }
+        }
+        repositories {
+            maven {
+                url = uri("$buildDir/repository")
+            }
+        }
+    }
+}
