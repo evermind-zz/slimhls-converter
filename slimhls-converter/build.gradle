@@ -15,7 +15,7 @@ android {
         versionName "1.0.0"
 
         ndk {
-            abiFilters += ['armeabi-v7a' ] //, 'arm64-v8a', 'x86', 'x86_64']
+            abiFilters += ['armeabi-v7a' ] // 'arm64-v8a', 'x86', 'x86_64' can be added if needed
         }
     }
 
@@ -42,11 +42,6 @@ android {
         }
     }
 
-    //packagingOptions {
-    //    jniLibs {
-    //        useLegacyPackaging true
-    //    }
-    //}
     sourceSets {
         main {
             jniLibs.srcDirs = ['src/main/jniLibs']
@@ -61,9 +56,8 @@ dependencies {
 def isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
 def isMac = System.getProperty("os.name").toLowerCase().contains("mac")
 def shellCmd = isWindows ? ["cmd", "/c"] : ["sh", "-c"]
-def pathSeparator = isWindows ? "\\" : "/"
 def ndkPath = System.getenv("ANDROID_NDK_HOME") ?: android.ndkDirectory
-def upxPath = "${projectDir}${pathSeparator}tools${pathSeparator}upx${pathSeparator}" + (isWindows ? "upx-amd64-win.exe" : "upx-amd64-linux")
+def upxPath = "${projectDir}/tools/upx/" + (isWindows ? "upx-amd64-win.exe" : "upx-amd64-linux")
 // Architectures to build
 def architectures = [
         [name: "x86_64", arch: "x86_64", crossPrefix: "x86_64-linux-android"],
@@ -71,67 +65,143 @@ def architectures = [
         [name: "x86", arch: "x86", crossPrefix: "i686-linux-android"],
         [name: "armeabi-v7a", arch: "arm", crossPrefix: "armv7a-linux-androideabi"]
 ]
-//]
 
-// FFmpeg tarball and extraction directory
+// FFmpeg build source: can be a tarball or a specific commit
 def ffmpegVersion = "7.1.1"
-def ffmpegTarball = file("${projectDir}${pathSeparator}tools${pathSeparator}ffmpeg-${ffmpegVersion}.tar.gz")
-def ffmpegExtractedDir = "${projectDir}${pathSeparator}ffmpeg-${ffmpegVersion}"
+// Directly specify the commit hash here, or leave as null to use the tarball
+def ffmpegCommitHash = "4c78a357d082b1097c4269dd1af116bb01ddc83e"  // e.g., "abcd1234"
+def ffmpegSourceDir = file("${projectDir}/ffmpeg-source")
+def ffmpegTarball = file("${projectDir}/tools/ffmpeg-${ffmpegVersion}.tar.gz")
+def ffmpegExtractedDir = "${projectDir}/ffmpeg-${ffmpegVersion}"
+def ffmpegDir = ffmpegCommitHash ? ffmpegSourceDir : file(ffmpegExtractedDir)
 
-// Task: Download FFmpeg tarball (only if missing)
-tasks.register("downloadFFmpeg") {
-    outputs.file(ffmpegTarball)
+
+tasks.register("fetchFFmpeg") {
     doLast {
-        if (!ffmpegTarball.exists()) {
-            println "Downloading FFmpeg ${ffmpegVersion}..."
-            new URL("https://ffmpeg.org/releases/ffmpeg-${ffmpegVersion}.tar.gz").withInputStream { i ->
-                ffmpegTarball.withOutputStream { it << i }
+        //def ffmpegSourceDir = file("${projectDir}${pathSeparator}ffmpeg")
+        if (!ffmpegSourceDir.exists()) {
+            ffmpegSourceDir.mkdirs()
+            project.exec {
+                commandLine "git", "init"
+                workingDir ffmpegSourceDir
             }
-            println "Download complete."
+            project.exec {
+                commandLine "git", "remote", "add", "origin", "https://git.ffmpeg.org/ffmpeg.git"
+                workingDir ffmpegSourceDir
+            }
+            project.exec {
+                commandLine "git", "fetch", "--depth", "1", "origin", ffmpegCommitHash
+                workingDir ffmpegSourceDir
+            }
+            project.exec {
+                commandLine "git", "checkout", "FETCH_HEAD"
+                workingDir ffmpegSourceDir
+            }
         } else {
-            println "FFmpeg tarball already exists. Skipping download."
+            println "FFmpeg already fetched. Skipping."
         }
     }
 }
 
-// Task: Extract FFmpeg tarball
-tasks.register("extractFFmpeg") {
-    dependsOn "downloadFFmpeg"
-    inputs.file(ffmpegTarball)
-    //outputs.dir(ffmpegExtractedDir)
+
+// Task: Prepare FFmpeg source (clone specific commit OR use tarball)
+tasks.register("prepareFFmpegSource") {
     doLast {
-        print(ffmpegExtractedDir)
-        if (!file(ffmpegExtractedDir).exists()) {
-            println "Extracting FFmpeg tarball..."
-            project.copy {
-                from tarTree(resources.gzip(ffmpegTarball))
-                into projectDir
+        if (ffmpegCommitHash) {
+            if (!ffmpegSourceDir.exists()) {
+                println "Shallow git copy of FFmpeg repository at commit ${ffmpegCommitHash}..."
+                ffmpegSourceDir.mkdirs()
+                project.exec {
+                    commandLine "git", "init"
+                    workingDir ffmpegSourceDir
+                }
+                project.exec {
+                    commandLine "git", "remote", "add", "origin", "https://git.ffmpeg.org/ffmpeg.git"
+                    workingDir ffmpegSourceDir
+                }
+                project.exec {
+                    commandLine "git", "fetch", "--depth", "1", "origin", ffmpegCommitHash
+                    workingDir ffmpegSourceDir
+                }
+                project.exec {
+                    commandLine "git", "checkout", "FETCH_HEAD"
+                    workingDir ffmpegSourceDir
+                }
+            } else {
+                println "FFmpeg source directory already exists. Skipping clone."
             }
-            println "Extraction complete."
         } else {
-            println "FFmpeg source already extracted. Skipping extraction."
+            if (!ffmpegTarball.exists()) {
+                println "Downloading FFmpeg ${ffmpegVersion}..."
+                new URL("https://ffmpeg.org/releases/ffmpeg-${ffmpegVersion}.tar.gz").withInputStream { i ->
+                    ffmpegTarball.withOutputStream { it << i }
+                }
+                println "Download complete."
+            } else {
+                println "FFmpeg tarball already exists. Skipping download."
+            }
+
+            if (!file(ffmpegExtractedDir).exists()) {
+                println "Extracting FFmpeg tarball..."
+                copy {
+                    from tarTree(resources.gzip(ffmpegTarball))
+                    into projectDir
+                }
+                println "Extraction complete."
+            } else {
+                println "FFmpeg source already extracted. Skipping extraction."
+            }
         }
     }
 }
-def apiLevel = 21
+
+// Task: Create a tarball snapshot of FFmpeg source (for GPL distribution)
+tasks.register("createFFmpegSnapshot", Tar) {
+    dependsOn "prepareFFmpegSource"
+    doFirst {
+        println "Creating FFmpeg snapshot tarball..."
+    }
+
+    exec {
+        commandLine shellCmd + ["pwd"]
+        workingDir ffmpegDir
+    }
+
+    // make distclean only works if it was configured before
+    // -> we only need to clean the directory if it was configured
+    def config_h = file("${ffmpegSourceDir}/config.h")
+    if (config_h.exists()) {
+        exec {
+            commandLine shellCmd + ["make distclean"]
+            workingDir ffmpegDir
+        }
+    }
+    archiveExtension.set("tar.gz")
+    compression = Compression.GZIP
+    def snapshotHash = ffmpegCommitHash ?: ffmpegVersion
+    archiveBaseName.set("ffmpeg-snapshot-${snapshotHash}")
+    destinationDirectory.set(file("${projectDir}/tools"))
+
+    from(ffmpegCommitHash ? ffmpegSourceDir : file(ffmpegExtractedDir))
+}
+
 // Register build tasks per architecture
+def apiLevel = 21
 architectures.each { arch ->
     def buildTaskName = "buildFFmpeg_${arch.name}"
     tasks.register(buildTaskName) {
-        dependsOn "extractFFmpeg"
+        dependsOn "prepareFFmpegSource"
         doLast {
-            def ffmpegDir = file(ffmpegExtractedDir)
-            def buildDir = "${projectDir}${pathSeparator}build${pathSeparator}${arch.name}"
+            def buildDir = "${projectDir}/build/${arch.name}"
 
-            def prebuiltDir = "${ndkPath}${pathSeparator}toolchains${pathSeparator}llvm${pathSeparator}prebuilt${pathSeparator}${isWindows ? 'windows-x86_64' : 'linux-x86_64'}"
-            def CC = "${prebuiltDir}${pathSeparator}bin${pathSeparator}${arch.crossPrefix}${apiLevel}-clang"
-            def CXX = "${prebuiltDir}${pathSeparator}bin${pathSeparator}${arch.crossPrefix}${apiLevel}-clang++"
-            def AR = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-ar"
-            def AS = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-as"
-            def NM = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-nm"
-            def STRIP = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-strip"
-            def RANLIB = "${prebuiltDir}${pathSeparator}bin${pathSeparator}llvm-ranlib"
-            def crossPrefix = "${prebuiltDir}${pathSeparator}bin${pathSeparator}${arch.crossPrefix}${isWindows ? 'clang' : ''}${apiLevel}-"
+            def prebuiltDir = "${ndkPath}/toolchains/llvm/prebuilt/${isWindows ? 'windows-x86_64' : 'linux-x86_64'}"
+            def CC = "${prebuiltDir}/bin/${arch.crossPrefix}${apiLevel}-clang"
+            def CXX = "${prebuiltDir}/bin/${arch.crossPrefix}${apiLevel}-clang++"
+            def AR = "${prebuiltDir}/bin/llvm-ar"
+            def AS = "${prebuiltDir}/bin/llvm-as"
+            def NM = "${prebuiltDir}/bin/llvm-nm"
+            def STRIP = "${prebuiltDir}/bin/llvm-strip"
+            def RANLIB = "${prebuiltDir}/bin/llvm-ranlib"
 
             def configureCmd = [
                     "./configure",
@@ -166,7 +236,7 @@ architectures.each { arch ->
                     "--enable-bsf=aac_adtstoasc",
                     "--enable-ffmpeg",
                     "--enable-small",
-                    "--extra-cflags=\"-Os -fdata-sections -ffunction-sections -DANDROID\"",
+                    "--extra-cflags=\"-Os -fdata-sections -ffunction-sections\"",
                     "--extra-ldflags=\"-Wl,--gc-sections -s\"",
                     "--enable-cross-compile",
                     "--cc=${CC}",
@@ -177,12 +247,8 @@ architectures.each { arch ->
                     "--ld=${CC}", // always use CC and not the raw ld. It does not know sysroot and therefore fail
                     "--strip=${STRIP}",
                     "--ranlib=${RANLIB}",
-                    "--sysroot=${prebuiltDir}${pathSeparator}sysroot"
+                    "--sysroot=${prebuiltDir}/sysroot"
             ]
-
-            //"--cpu=armv7-a",
-            // "--extra-cflags=\"-Os -fdata-sections -ffunction-sections -march=armv7-a -mfloat-abi=softfp -mfpu=vfpv3-d16\"",
-            // "--cross-prefix=${crossPrefix}",
 
             // Run configure
             project.exec {
@@ -203,25 +269,25 @@ architectures.each { arch ->
             }
 
             // Create jniLibs dir
-            def jniLibsDir = file("${projectDir}${pathSeparator}src${pathSeparator}main${pathSeparator}jniLibs${pathSeparator}${arch.name}")
+            def jniLibsDir = file("${projectDir}/src/main/jniLibs/${arch.name}")
             jniLibsDir.mkdirs()
 
             // Copy ffmpeg binary to jniLibs
             copy {
-                from file("${buildDir}${pathSeparator}bin${pathSeparator}ffmpeg")
+                from file("${buildDir}/bin/ffmpeg")
                 into jniLibsDir
                 rename { "libffmpeg.so" }
             }
 
             // Strip binary
             project.exec {
-                commandLine "${STRIP}", "${jniLibsDir}${pathSeparator}libffmpeg.so"
+                commandLine "${STRIP}", "${jniLibsDir}/libffmpeg.so"
             }
 
             // UPX compress (skip on macOS)
             if (!isMac) {
                 project.exec {
-                    commandLine shellCmd + ["${upxPath} --best ${jniLibsDir}${pathSeparator}libffmpeg.so"]
+                    commandLine shellCmd + ["${upxPath} --best ${jniLibsDir}/libffmpeg.so"]
                 }
             } else {
                 logger.warn("UPX is not available on macOS. Skipping compression for ${arch.name} ffmpeg binary.")
@@ -251,11 +317,10 @@ tasks.named("preBuild") {
 
 // Clean up unnecessary files in jniLibs (keep only ffmpeg binaries)
 tasks.register("cleanJniLibs", Delete) {
-    delete fileTree("${projectDir}${pathSeparator}src${pathSeparator}main${pathSeparator}jniLibs") {
+    delete fileTree("${projectDir}/src/main/jniLibs") {
         exclude "**/ffmpeg"
     }
 }
-
 
 // Clean jniLibs after assembling release
 tasks.named("assemble") {
