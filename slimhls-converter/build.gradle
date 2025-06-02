@@ -13,10 +13,6 @@ android {
         targetSdk 31
         versionCode 1
         versionName "1.0.0"
-
-        ndk {
-            abiFilters += ['armeabi-v7a' ] // 'arm64-v8a', 'x86', 'x86_64' can be added if needed
-        }
     }
 
     //ndkVersion "25.2.9519653"
@@ -191,6 +187,7 @@ architectures.each { arch ->
     def buildTaskName = "buildFFmpeg_${arch.name}"
     tasks.register(buildTaskName) {
         dependsOn "prepareFFmpegSource"
+
         doLast {
             def buildDir = "${projectDir}/build/${arch.name}"
 
