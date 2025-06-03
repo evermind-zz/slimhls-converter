@@ -62,66 +62,39 @@ def architectures = [
         [name: "armeabi-v7a", arch: "arm", crossPrefix: "armv7a-linux-androideabi"]
 ]
 
+def downloadDir = "${projectDir}/downloads"
 // FFmpeg build source: can be a tarball or a specific commit
 def ffmpegVersion = "7.1.1"
 // Directly specify the commit hash here, or leave as null to use the tarball
-def ffmpegCommitHash = "4c78a357d082b1097c4269dd1af116bb01ddc83e"  // e.g., "abcd1234"
-def ffmpegSourceDir = file("${projectDir}/ffmpeg-source")
-def ffmpegTarball = file("${projectDir}/tools/ffmpeg-${ffmpegVersion}.tar.gz")
-def ffmpegExtractedDir = "${projectDir}/ffmpeg-${ffmpegVersion}"
-def ffmpegDir = ffmpegCommitHash ? ffmpegSourceDir : file(ffmpegExtractedDir)
-
-
-tasks.register("fetchFFmpeg") {
-    doLast {
-        //def ffmpegSourceDir = file("${projectDir}${pathSeparator}ffmpeg")
-        if (!ffmpegSourceDir.exists()) {
-            ffmpegSourceDir.mkdirs()
-            project.exec {
-                commandLine "git", "init"
-                workingDir ffmpegSourceDir
-            }
-            project.exec {
-                commandLine "git", "remote", "add", "origin", "https://git.ffmpeg.org/ffmpeg.git"
-                workingDir ffmpegSourceDir
-            }
-            project.exec {
-                commandLine "git", "fetch", "--depth", "1", "origin", ffmpegCommitHash
-                workingDir ffmpegSourceDir
-            }
-            project.exec {
-                commandLine "git", "checkout", "FETCH_HEAD"
-                workingDir ffmpegSourceDir
-            }
-        } else {
-            println "FFmpeg already fetched. Skipping."
-        }
-    }
-}
+def ffmpegGitCommitHash = "b4d9fa6cb93a3ef8209508b2fb9cd1dc95f03090"  // e.g., "abcd1234"
+def ffmpegGitSourceDir = file("${downloadDir}/ffmpeg-git")
+def ffmpegTarball = file("${downloadDir}/ffmpeg-${ffmpegVersion}.tar.gz")
+def ffmpegExtractedDir = "${downloadDir}/ffmpeg-${ffmpegVersion}"
+def ffmpegDir = ffmpegGitCommitHash ? ffmpegGitSourceDir : file(ffmpegExtractedDir)
 
 
 // Task: Prepare FFmpeg source (clone specific commit OR use tarball)
 tasks.register("prepareFFmpegSource") {
     doLast {
-        if (ffmpegCommitHash) {
-            if (!ffmpegSourceDir.exists()) {
-                println "Shallow git copy of FFmpeg repository at commit ${ffmpegCommitHash}..."
-                ffmpegSourceDir.mkdirs()
+        if (ffmpegGitCommitHash) {
+            if (!ffmpegGitSourceDir.exists()) {
+                println "Shallow git copy of FFmpeg repository at commit ${ffmpegGitCommitHash}..."
+                ffmpegGitSourceDir.mkdirs()
                 project.exec {
                     commandLine "git", "init"
-                    workingDir ffmpegSourceDir
+                    workingDir ffmpegGitSourceDir
                 }
                 project.exec {
-                    commandLine "git", "remote", "add", "origin", "https://git.ffmpeg.org/ffmpeg.git"
-                    workingDir ffmpegSourceDir
+                    commandLine "git", "remote", "add", "origin", "https://github.com/evermind-zz/FFmpeg4slimhls-converter"
+                    workingDir ffmpegGitSourceDir
                 }
                 project.exec {
-                    commandLine "git", "fetch", "--depth", "1", "origin", ffmpegCommitHash
-                    workingDir ffmpegSourceDir
+                    commandLine "git", "fetch", "--depth", "1", "origin", ffmpegGitCommitHash
+                    workingDir ffmpegGitSourceDir
                 }
                 project.exec {
                     commandLine "git", "checkout", "FETCH_HEAD"
-                    workingDir ffmpegSourceDir
+                    workingDir ffmpegGitSourceDir
                 }
             } else {
                 println "FFmpeg source directory already exists. Skipping clone."
@@ -165,7 +138,7 @@ tasks.register("createFFmpegSnapshot", Tar) {
 
     // make distclean only works if it was configured before
     // -> we only need to clean the directory if it was configured
-    def config_h = file("${ffmpegSourceDir}/config.h")
+    def config_h = file("${ffmpegGitSourceDir}/config.h")
     if (config_h.exists()) {
         exec {
             commandLine shellCmd + ["make distclean"]
@@ -174,11 +147,11 @@ tasks.register("createFFmpegSnapshot", Tar) {
     }
     archiveExtension.set("tar.gz")
     compression = Compression.GZIP
-    def snapshotHash = ffmpegCommitHash ?: ffmpegVersion
+    def snapshotHash = ffmpegGitCommitHash ?: ffmpegVersion
     archiveBaseName.set("ffmpeg-snapshot-${snapshotHash}")
-    destinationDirectory.set(file("${projectDir}/tools"))
+    destinationDirectory.set(file("${projectDir}/dist"))
 
-    from(ffmpegCommitHash ? ffmpegSourceDir : file(ffmpegExtractedDir))
+    from(ffmpegGitCommitHash ? ffmpegGitSourceDir : file(ffmpegExtractedDir))
 }
 
 // Register build tasks per architecture
