@@ -59,11 +59,13 @@ dependencies {
 ```
 
 #### Repository
-Ensure the Maven Central repository is in your project:
+Releases are distributed via jitpack. Make sure you include jitpack in
+your `build.gradle`:
 
 ```gradle
 repositories {
-    mavenCentral()
+    maven { url "https://jitpack.io" }
+    // other sources
 }
 ```
 
