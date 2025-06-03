@@ -3,26 +3,83 @@ plugins {
     id 'maven-publish'
 }
 
+// OS detection and paths
+def isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+def isMac = System.getProperty("os.name").toLowerCase().contains("mac")
+def isLinux = !isWindows && !isMac
+
+// FFmpeg source directory
+def downloadDir = "${projectDir}/downloads"
+def ffmpegVersion = "7.1.1"
+// set ffmpegGitCommitHash to null if you want to use a tarball as source
+def ffmpegGitCommitHash = "b4d9fa6cb93a3ef8209508b2fb9cd1dc95f03090"
+def ffmpegGitSourceDir = file("${downloadDir}/ffmpeg-git")
+def ffmpegTarball = file("${downloadDir}/ffmpeg-${ffmpegVersion}.tar.gz")
+def ffmpegExtractedDir = "${downloadDir}/ffmpeg-${ffmpegVersion}"
+def ffmpegDir = ffmpegGitCommitHash ? ffmpegGitSourceDir : file(ffmpegExtractedDir)
+
+// Determine HOST_TAG based on OS
+def hostTag = isWindows ? "windows-x86_64" : isMac ? "darwin-x86_64" : "linux-x86_64"
+
+def upxPath = "${projectDir}/tools/upx/" +
+        (isWindows ? "upx-amd64-win.exe" : isMac ? "upx-macos" : "upx-amd64-linux")
+def upxAvailable = file(upxPath).exists()
+def nproc = Runtime.runtime.availableProcessors()
+
+println "UPX Path: $upxPath"
+println upxAvailable ? "UPX binary found." : "UPX binary not found or unsupported on this platform."
+println "HOST_TAG: $hostTag"
+println "FFMPEG_SOURCE_DIR: $ffmpegDir"
+
 android {
     namespace 'com.github.evermindzz.slimhls.converter'
-
     compileSdk 31
 
     defaultConfig {
         minSdk 19
-        targetSdk 31
+        targetSdk 34
         versionCode 1
         versionName "1.0.0"
+
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DNUM_JOBS=${nproc}", "-DUPX_PATH=${upxAvailable ? upxPath.replace('\\', '/') : ''}", "-DHOST_TAG=${hostTag}", "-DFFMPEG_SOURCE_DIR=${ffmpegDir}"
+            }
+        }
+
+        ndkVersion = System.getenv('NDK_VERSION') ?: '25.2.9519653'
     }
 
-    //ndkVersion "25.2.9519653"
-    ndkVersion "27.2.12479018"
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
 
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
 
+    // -DCMAKE_BUILD_TYPE=.. is ignored for now in our CMakeLists.txt as we won't
+    // debug ffmpeg:) -- at least for now so keep it for reference
     buildTypes {
+        debug {
+            externalNativeBuild.cmake {
+                arguments "-DCMAKE_BUILD_TYPE=Debug"
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            externalNativeBuild.cmake {
+                arguments "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+            }
         }
     }
 
@@ -38,66 +95,44 @@ android {
         }
     }
 
-    sourceSets {
-        main {
-            jniLibs.srcDirs = ['build/main/jniLibs']
+    packagingOptions {
+        jniLibs {
+            // we created a dummy library in CMakeLists.txt to just trigger the autotools build of ffmpeg
+            // but we do not want to distribute it
+            excludes += ['**/libdummy.so']
         }
     }
 }
 
 dependencies {
+    // None for now
 }
 
-// OS detection and paths
-def isWindows = System.getProperty("os.name").toLowerCase().contains("windows")
-def isMac = System.getProperty("os.name").toLowerCase().contains("mac")
-def shellCmd = isWindows ? ["cmd", "/c"] : ["sh", "-c"]
-def ndkPath = System.getenv("ANDROID_NDK_HOME") ?: android.ndkDirectory
-def upxPath = "${projectDir}/tools/upx/" + (isWindows ? "upx-amd64-win.exe" : "upx-amd64-linux")
-// Architectures to build
-def architectures = [
-        [name: "x86_64", arch: "x86_64", crossPrefix: "x86_64-linux-android"],
-        [name: "arm64-v8a", arch: "arm64", crossPrefix: "aarch64-linux-android"],
-        [name: "x86", arch: "x86", crossPrefix: "i686-linux-android"],
-        [name: "armeabi-v7a", arch: "arm", crossPrefix: "armv7a-linux-androideabi"]
-]
-
-def downloadDir = "${projectDir}/downloads"
-// FFmpeg build source: can be a tarball or a specific commit
-def ffmpegVersion = "7.1.1"
-// Directly specify the commit hash here, or leave as null to use the tarball
-def ffmpegGitCommitHash = "b4d9fa6cb93a3ef8209508b2fb9cd1dc95f03090"  // e.g., "abcd1234"
-def ffmpegGitSourceDir = file("${downloadDir}/ffmpeg-git")
-def ffmpegTarball = file("${downloadDir}/ffmpeg-${ffmpegVersion}.tar.gz")
-def ffmpegExtractedDir = "${downloadDir}/ffmpeg-${ffmpegVersion}"
-def ffmpegDir = ffmpegGitCommitHash ? ffmpegGitSourceDir : file(ffmpegExtractedDir)
-
-
-// Task: Prepare FFmpeg source (clone specific commit OR use tarball)
+// Checkout FFmpeg
 tasks.register("prepareFFmpegSource") {
     doLast {
         if (ffmpegGitCommitHash) {
             if (!ffmpegGitSourceDir.exists()) {
-                println "Shallow git copy of FFmpeg repository at commit ${ffmpegGitCommitHash}..."
+                println "Cloning FFmpeg commit ${ffmpegGitCommitHash}"
                 ffmpegGitSourceDir.mkdirs()
-                project.exec {
+                exec {
+                    workingDir ffmpegGitSourceDir
                     commandLine "git", "init"
-                    workingDir ffmpegGitSourceDir
                 }
-                project.exec {
+                exec {
+                    workingDir ffmpegGitSourceDir
                     commandLine "git", "remote", "add", "origin", "https://github.com/evermind-zz/FFmpeg4slimhls-converter"
-                    workingDir ffmpegGitSourceDir
                 }
-                project.exec {
+                exec {
+                    workingDir ffmpegGitSourceDir
                     commandLine "git", "fetch", "--depth", "1", "origin", ffmpegGitCommitHash
-                    workingDir ffmpegGitSourceDir
                 }
-                project.exec {
-                    commandLine "git", "checkout", "FETCH_HEAD"
+                exec {
                     workingDir ffmpegGitSourceDir
+                    commandLine "git", "checkout", "FETCH_HEAD"
                 }
             } else {
-                println "FFmpeg source directory already exists. Skipping clone."
+                println "FFmpeg source already exists"
             }
         } else {
             if (!ffmpegTarball.exists()) {
@@ -109,12 +144,10 @@ tasks.register("prepareFFmpegSource") {
             } else {
                 println "FFmpeg tarball already exists. Skipping download."
             }
-
             if (!file(ffmpegExtractedDir).exists()) {
-                println "Extracting FFmpeg tarball..."
                 copy {
-                    from tarTree(resources.gzip(ffmpegTarball))
-                    into projectDir
+                    from tarTree(ffmpegTarball)
+                    into downloadDir
                 }
                 println "Extraction complete."
             } else {
@@ -124,179 +157,22 @@ tasks.register("prepareFFmpegSource") {
     }
 }
 
-// Task: Create a tarball snapshot of FFmpeg source (for GPL distribution)
+tasks.named("preBuild") {
+    dependsOn "prepareFFmpegSource"
+}
+
+// Create a tarball snapshot of FFmpeg source (for GPL distribution)
 tasks.register("createFFmpegSnapshot", Tar) {
     dependsOn "prepareFFmpegSource"
-    doFirst {
-        println "Creating FFmpeg snapshot tarball..."
-    }
-
-    exec {
-        commandLine shellCmd + ["pwd"]
-        workingDir ffmpegDir
-    }
-
-    // make distclean only works if it was configured before
-    // -> we only need to clean the directory if it was configured
-    def config_h = file("${ffmpegGitSourceDir}/config.h")
-    if (config_h.exists()) {
-        exec {
-            commandLine shellCmd + ["make distclean"]
-            workingDir ffmpegDir
-        }
-    }
     archiveExtension.set("tar.gz")
     compression = Compression.GZIP
-    def snapshotHash = ffmpegGitCommitHash ?: ffmpegVersion
-    archiveBaseName.set("ffmpeg-snapshot-${snapshotHash}")
+    archiveBaseName.set("ffmpeg-snapshot-${ffmpegGitCommitHash ?: ffmpegVersion}")
     destinationDirectory.set(file("${projectDir}/dist"))
-
-    from(ffmpegGitCommitHash ? ffmpegGitSourceDir : file(ffmpegExtractedDir))
+    from ffmpegDir
+    println "FFmpeg snapshot can be found here ${projectDir}/dist"
 }
 
-// Register build tasks per architecture
-def apiLevel = 21
-architectures.each { arch ->
-    def buildTaskName = "buildFFmpeg_${arch.name}"
-    tasks.register(buildTaskName) {
-        dependsOn "prepareFFmpegSource"
-
-        doLast {
-            def buildDir = "${projectDir}/build/${arch.name}"
-
-            def prebuiltDir = "${ndkPath}/toolchains/llvm/prebuilt/${isWindows ? 'windows-x86_64' : 'linux-x86_64'}"
-            def CC = "${prebuiltDir}/bin/${arch.crossPrefix}${apiLevel}-clang"
-            def CXX = "${prebuiltDir}/bin/${arch.crossPrefix}${apiLevel}-clang++"
-            def AR = "${prebuiltDir}/bin/llvm-ar"
-            def AS = "${prebuiltDir}/bin/llvm-as"
-            def NM = "${prebuiltDir}/bin/llvm-nm"
-            def STRIP = "${prebuiltDir}/bin/llvm-strip"
-            def RANLIB = "${prebuiltDir}/bin/llvm-ranlib"
-
-            def configureCmd = [
-                    "./configure",
-                    "--prefix=${buildDir}",
-                    "--target-os=android",
-                    "--arch=${arch.arch}",
-                    "--disable-everything",
-                    "--disable-zlib",
-                    "--disable-doc",
-                    "--disable-avdevice",
-                    "--disable-swscale",
-                    "--disable-encoders",
-                    "--disable-filters",
-                    "--disable-indevs",
-                    "--disable-outdevs",
-                    "--disable-debug",
-                    "--disable-autodetect",
-                    "--disable-asm",
-                    "--enable-avformat",
-                    "--enable-avcodec",
-                    "--enable-avutil",
-                    "--enable-swresample",
-                    "--enable-decoder=h264",
-                    "--enable-decoder=aac",
-                    "--enable-demuxer=mpegts",
-                    "--enable-demuxer=concat",
-                    "--enable-muxer=mp4",
-                    "--enable-parser=h264",
-                    "--enable-parser=aac",
-                    "--enable-protocol=file",
-                    "--enable-protocol=concat",
-                    "--enable-bsf=aac_adtstoasc",
-                    "--enable-ffmpeg",
-                    "--enable-small",
-                    "--extra-cflags=\"-Os -fdata-sections -ffunction-sections\"",
-                    "--extra-ldflags=\"-Wl,--gc-sections -s\"",
-                    "--enable-cross-compile",
-                    "--cc=${CC}",
-                    "--cxx=${CXX}",
-                    "--ar=${AR}",
-                    "--as=${AS}",
-                    "--nm=${NM}",
-                    "--ld=${CC}", // always use CC and not the raw ld. It does not know sysroot and therefore fail
-                    "--strip=${STRIP}",
-                    "--ranlib=${RANLIB}",
-                    "--sysroot=${prebuiltDir}/sysroot"
-            ]
-
-            // Run configure
-            project.exec {
-                commandLine shellCmd + [configureCmd.join(" ")]
-                workingDir ffmpegDir
-            }
-
-            // Run make
-            project.exec {
-                commandLine shellCmd + ["make -j${Runtime.runtime.availableProcessors()}"]
-                workingDir ffmpegDir
-            }
-
-            // Run make install
-            project.exec {
-                commandLine shellCmd + ["make install"]
-                workingDir ffmpegDir
-            }
-
-            // Create jniLibs dir
-            def jniLibsDir = file("${projectDir}/build/main/jniLibs/${arch.name}")
-            jniLibsDir.mkdirs()
-
-            // Copy ffmpeg binary to jniLibs
-            copy {
-                from file("${buildDir}/bin/ffmpeg")
-                into jniLibsDir
-                rename { "libffmpeg.so" }
-            }
-
-            // Strip binary
-            project.exec {
-                commandLine "${STRIP}", "${jniLibsDir}/libffmpeg.so"
-            }
-
-            // UPX compress (skip on macOS)
-            if (!isMac) {
-                project.exec {
-                    commandLine shellCmd + ["${upxPath} --best ${jniLibsDir}/libffmpeg.so"]
-                }
-            } else {
-                logger.warn("UPX is not available on macOS. Skipping compression for ${arch.name} ffmpeg binary.")
-            }
-
-            // Clean build artifacts
-            project.exec {
-                commandLine shellCmd + ["make distclean"]
-                workingDir ffmpegDir
-            }
-
-            // Delete build directory
-            delete buildDir
-        }
-    }
-}
-
-// Aggregate build task for all architectures
-tasks.register("buildFFmpeg") {
-    dependsOn architectures.collect { "buildFFmpeg_${it.name}" }
-}
-
-// Hook the buildFFmpeg into the preBuild lifecycle
-tasks.named("preBuild") {
-    dependsOn "buildFFmpeg"
-}
-
-// Clean up unnecessary files in jniLibs (keep only ffmpeg binaries)
-tasks.register("cleanJniLibs", Delete) {
-    delete fileTree("${projectDir}/build/main/jniLibs") {
-        exclude "**/ffmpeg"
-    }
-}
-
-// Clean jniLibs after assembling release
-tasks.named("assemble") {
-    finalizedBy "cleanJniLibs"
-}
-
+// Maven publication setup
 afterEvaluate {
     publishing {
         publications {
@@ -305,11 +181,6 @@ afterEvaluate {
                 groupId 'com.github.evermind-zz'
                 artifactId 'slimhls-converter'
                 version android.defaultConfig.versionName
-            }
-        }
-        repositories {
-            maven {
-                url = uri("$buildDir/repository")
             }
         }
     }
