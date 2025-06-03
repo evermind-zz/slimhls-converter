@@ -40,7 +40,7 @@ android {
 
     sourceSets {
         main {
-            jniLibs.srcDirs = ['src/main/jniLibs']
+            jniLibs.srcDirs = ['build/main/jniLibs']
         }
     }
 }
@@ -266,7 +266,7 @@ architectures.each { arch ->
             }
 
             // Create jniLibs dir
-            def jniLibsDir = file("${projectDir}/src/main/jniLibs/${arch.name}")
+            def jniLibsDir = file("${projectDir}/build/main/jniLibs/${arch.name}")
             jniLibsDir.mkdirs()
 
             // Copy ffmpeg binary to jniLibs
@@ -314,7 +314,7 @@ tasks.named("preBuild") {
 
 // Clean up unnecessary files in jniLibs (keep only ffmpeg binaries)
 tasks.register("cleanJniLibs", Delete) {
-    delete fileTree("${projectDir}/src/main/jniLibs") {
+    delete fileTree("${projectDir}/build/main/jniLibs") {
         exclude "**/ffmpeg"
     }
 }
